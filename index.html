@@ -2295,11 +2295,16 @@
     <!-- ADMIN -->
     <div id="topic-admin" class="topic-section">
       <div class="card" style="border-top:4px solid var(--danger);">
-        <div class="card-title" style="color:var(--danger); display: flex; justify-content: space-between; width: 100%;">
-            <span><i class="fa-solid fa-user-shield"></i> Panneau d'Administration</span>
-            <button class="btn btn-warning" onclick="migrateDatabaseToSubcollections()" style="font-size: 0.75rem;">
-                <i class="fa-solid fa-database"></i> Migrer la Base de Données (Action Unique)
-            </button>
+        <div class="card-title" style="color:var(--danger); display: flex; justify-content: space-between; align-items:center; width: 100%; flex-wrap:wrap; gap:10px;">
+            <span><i class="fa-solid fa-user-shield"></i> Panneau d'Administration & Gestion des Accès</span>
+            <div style="display:flex; gap:10px;">
+                <button class="btn btn-primary" onclick="adminAddNewUserModal()" style="font-size: 0.8rem; background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 100%);">
+                    <i class="fa-solid fa-user-plus"></i> Ajouter un Collaborateur
+                </button>
+                <button class="btn btn-warning" onclick="migrateDatabaseToSubcollections()" style="font-size: 0.75rem;">
+                    <i class="fa-solid fa-database"></i> Migrer la Base
+                </button>
+            </div>
         </div>
         <div class="card-subtitle">Validez ou modifiez les accès de vos collaborateurs instantanément.</div>
         <div class="table-container">
@@ -2610,16 +2615,33 @@
     } catch (err) { console.error("Erreur config projets:", err); }
   });
 
-  globalUsersUnsubscribe = onSnapshot(doc(db, "config", "users_list"), async (snap) => {
+  // Robust & Isolated User Synchronization (Individual Firestore Docs)
+  globalUsersUnsubscribe = onSnapshot(collection(db, "system_users"), async (snap) => {
     try {
-      if(snap.exists()) { window.globalUsersList = snap.data().users || []; } 
-      else {
-        window.globalUsersList = [
-          {email:'admin@gcb.dz', name:'Responsable Principal', codeSha:'admin123', role:'admin', isApproved: true}
-        ];
-        await setDoc(doc(db, "config", "users_list"), { users: window.globalUsersList });
+      if (!snap.empty) {
+        window.globalUsersList = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      } else {
+        // Migration / Initial Seed if collection is empty
+        const legacySnap = await getDoc(doc(db, "config", "users_list"));
+        let initialUsers = (legacySnap.exists() && legacySnap.data().users && legacySnap.data().users.length > 0)
+          ? legacySnap.data().users
+          : [
+              { email: 'admin@gcb.dz', name: 'Responsable Principal', codeSha: 'admin123', role: 'admin', isApproved: true },
+              { email: 'ziani.kheireddine@gcb.dz', name: 'ZIANI Mohammed Kheir Eddine', codeSha: 'gcb2026', role: 'Quality Engineer', isApproved: true },
+              { email: 'belghennou.zakarya@gcb.dz', name: 'Belghennou Zakarya', codeSha: 'gcb2026', role: 'Plannificateur', isApproved: true },
+              { email: 'omar.elabas@gcb.dz', name: 'Omar Elabas', codeSha: 'gcb2026', role: 'Quality Engineer', isApproved: true }
+            ];
+        for (const u of initialUsers) {
+          const docId = (u.email || '').toLowerCase().trim();
+          if (docId) {
+            await setDoc(doc(db, "system_users", docId), u, { merge: true });
+          }
+        }
+        window.globalUsersList = initialUsers;
       }
-      if(window.currentUser && window.currentUser.role === 'admin') renderTablesFromDB();
+      // Keep legacy config document synchronized for backward-compatibility
+      setDoc(doc(db, "config", "users_list"), { users: window.globalUsersList }, { merge: true }).catch(() => {});
+      if (window.currentUser && (window.currentUser.role === 'admin' || window.currentUser.role === 'Responsable')) renderTablesFromDB();
     } catch (err) { console.error("Erreur profils utilisateurs:", err); }
   });
 
@@ -2705,7 +2727,7 @@
   };
 
   window.processAuth = async function() {
-    const email = document.getElementById('authEmail').value.trim();
+    const email = document.getElementById('authEmail').value.trim().toLowerCase();
     const password = document.getElementById('authPassword').value;
     const name = document.getElementById('authName').value.trim();
     const role = document.getElementById('authRole').value;
@@ -2717,18 +2739,20 @@
 
     if(window.isSignUpMode) {
       if(!email || !password || !name) { window.showToast("Remplissez tous les champs.", "danger"); return; }
-      if(window.globalUsersList.find(u => u.email === email)) { window.showToast("Email déjà utilisé.", "danger"); return; }
+      if(window.globalUsersList.find(u => (u.email || '').toLowerCase() === email)) { window.showToast("Cet email est déjà enregistré.", "danger"); return; }
       
       const isApproved = false;
+      const newUser = { email, name, codeSha: password, role, isApproved, createdAt: Date.now() };
       
-      window.globalUsersList.push({ email, name, codeSha: password, role, isApproved });
       try {
-        await setDoc(doc(db, "config", "users_list"), { users: window.globalUsersList });
+        await setDoc(doc(db, "system_users", email), newUser);
+        await setDoc(doc(db, "config", "users_list"), { users: [...window.globalUsersList.filter(u => (u.email || '').toLowerCase() !== email), newUser] }, { merge: true });
+        window.logAction("Inscription", `Nouvelle demande de compte pour ${name} (${email}) - Rôle: ${role}`);
         window.showToast("Compte créé ! En attente d'approbation (Admin / Responsable).", "warning");
         window.toggleAuthMode();
-      } catch (err) { window.showToast("Erreur lors de l'inscription", "danger"); }
+      } catch (err) { console.error(err); window.showToast("Erreur lors de l'inscription", "danger"); }
     } else {
-      const found = window.globalUsersList.find(u => u.email === email && (u.password === password || u.codeSha === password));
+      const found = window.globalUsersList.find(u => (u.email || '').toLowerCase() === email && (u.password === password || u.codeSha === password));
       if(found) { 
         if (found.isApproved === false) {
             window.showToast("Accès refusé : Compte en attente d'approbation.", "danger");
@@ -2737,6 +2761,7 @@
         if (found.isApproved === undefined) found.isApproved = true;
 
         window.currentUser = found; 
+        window.logAction("Connexion", `Connexion réussie: ${found.name || found.email} [${found.role}]`);
         launchApplication(); 
       } else { 
         window.showToast("Identifiants incorrects.", "danger"); 
@@ -3577,12 +3602,20 @@
 
     if (e.target.classList.contains('admin-role-select')) {
       const uIdx = e.target.dataset.uidx;
+      const targetUser = window.globalUsersList[uIdx];
       const newRole = e.target.value;
-      window.globalUsersList[uIdx].role = newRole;
-      try {
-        await setDoc(doc(db, "config", "users_list"), { users: window.globalUsersList });
-        window.showToast("Droits d'accès modifiés.");
-      } catch(err) { window.showToast("Erreur privilèges admin", "danger"); }
+      if (targetUser) {
+        targetUser.role = newRole;
+        const emailKey = (targetUser.email || '').toLowerCase().trim();
+        try {
+          if (emailKey) {
+            await updateDoc(doc(db, "system_users", emailKey), { role: newRole });
+          }
+          await setDoc(doc(db, "config", "users_list"), { users: window.globalUsersList }, { merge: true });
+          window.logAction("Administration", `A modifié le rôle de ${targetUser.name || targetUser.email} -> ${newRole}`);
+          window.showToast("Droits d'accès modifiés avec succès.");
+        } catch(err) { console.error(err); window.showToast("Erreur privilèges admin", "danger"); }
+      }
     }
   });
 
@@ -3634,26 +3667,96 @@
     if (e.target.closest('.admin-approve-btn')) {
       const btn = e.target.closest('.admin-approve-btn');
       const uIdx = btn.dataset.uidx;
-      if(confirm("Approuver l'accès de cet utilisateur ?")) {
-        window.globalUsersList[uIdx].isApproved = true;
+      const targetUser = window.globalUsersList[uIdx];
+      if(targetUser && confirm(`Approuver l'accès de ${targetUser.name || targetUser.email} ?`)) {
+        targetUser.isApproved = true;
+        const emailKey = (targetUser.email || '').toLowerCase().trim();
         try {
-          await setDoc(doc(db, "config", "users_list"), { users: window.globalUsersList });
+          if (emailKey) {
+            await updateDoc(doc(db, "system_users", emailKey), { isApproved: true });
+          }
+          await setDoc(doc(db, "config", "users_list"), { users: window.globalUsersList }, { merge: true });
+          window.logAction("Administration", `A validé et activé le compte de ${targetUser.name || targetUser.email}`);
           window.showToast("Compte approuvé avec succès !");
-        } catch(err) { window.showToast("Erreur lors de l'approbation", "danger"); }
+        } catch(err) { console.error(err); window.showToast("Erreur lors de l'approbation", "danger"); }
       }
     }
 
-    if (e.target.classList.contains('admin-user-del')) {
-      const uIdx = e.target.dataset.uidx;
-      if(confirm("Révoquer cet accès ?")) {
+    if (e.target.classList.contains('admin-user-del') || e.target.closest('.admin-user-del')) {
+      const btn = e.target.closest('.admin-user-del') || e.target;
+      const uIdx = btn.dataset.uidx;
+      const targetUser = window.globalUsersList[uIdx];
+      if (!targetUser) return;
+      
+      const confirmMsg = prompt(`⚠️ SÉCURITÉ : Pour révoquer définitivement l'accès de "${targetUser.name || targetUser.email}", tapez OUI ci-dessous :`);
+      if (confirmMsg && confirmMsg.trim().toUpperCase() === 'OUI') {
+        const emailKey = (targetUser.email || '').toLowerCase().trim();
         window.globalUsersList.splice(parseInt(uIdx), 1);
         try {
+          if (emailKey) {
+            await deleteDoc(doc(db, "system_users", emailKey));
+          }
           await setDoc(doc(db, "config", "users_list"), { users: window.globalUsersList });
+          window.logAction("Administration", `⚠️ A RÉVOQUÉ et supprimé le compte de ${targetUser.name || targetUser.email}`);
+          window.pushAlert('admin', `Compte utilisateur révoqué : ${targetUser.name || targetUser.email}`);
           window.showToast("Accès utilisateur révoqué.");
-        } catch(err) { window.showToast("Erreur modification admin", "danger"); }
+        } catch(err) { console.error(err); window.showToast("Erreur modification admin", "danger"); }
       }
     }
   });
+
+  window.adminAddNewUserModal = async function() {
+    const name = prompt("Nom & Prénom du collaborateur (ex: Ahmed Benali) :");
+    if (!name || !name.trim()) return;
+
+    const email = prompt("Adresse Email professionnelle (ex: a.benali@gcb.dz) :");
+    if (!email || !email.trim()) return;
+    const cleanEmail = email.trim().toLowerCase();
+
+    if (window.globalUsersList && window.globalUsersList.find(u => (u.email || '').toLowerCase() === cleanEmail)) {
+      window.showToast("Cet email existe déjà dans le système.", "danger");
+      return;
+    }
+
+    const password = prompt("Mot de passe initial pour ce compte :", "gcb2026");
+    if (!password || !password.trim()) return;
+
+    const rolePrompt = prompt(
+      "Rôle à attribuer :\n1: Responsable\n2: Quality Engineer\n3: Plannificateur\n4: Gestionnaire de stock\n5: Coordinateur sur site\n6: Technique\n7: viewer (Lecture seule)\n\nTapez le rôle souhaité :",
+      "Responsable"
+    );
+    if (!rolePrompt) return;
+
+    let role = "Responsable";
+    const r = rolePrompt.trim().toLowerCase();
+    if (r === "1" || r.includes("responsable")) role = "Responsable";
+    else if (r === "2" || r.includes("quality") || r.includes("qualite")) role = "Quality Engineer";
+    else if (r === "3" || r.includes("plan")) role = "Plannificateur";
+    else if (r === "4" || r.includes("stock")) role = "Gestionnaire de stock";
+    else if (r === "5" || r.includes("coord")) role = "Coordinateur sur site";
+    else if (r === "6" || r.includes("tech")) role = "Technique";
+    else if (r === "7" || r.includes("view") || r.includes("lecture")) role = "viewer";
+    else role = rolePrompt.trim();
+
+    const newUser = {
+      email: cleanEmail,
+      name: name.trim(),
+      codeSha: password.trim(),
+      role: role,
+      isApproved: true,
+      createdAt: Date.now()
+    };
+
+    try {
+      await setDoc(doc(db, "system_users", cleanEmail), newUser);
+      await setDoc(doc(db, "config", "users_list"), { users: [...window.globalUsersList.filter(u => (u.email || '').toLowerCase() !== cleanEmail), newUser] }, { merge: true });
+      window.logAction("Administration", `A CRÉÉ et activé le compte de ${name.trim()} (${cleanEmail}) - Rôle: ${role}`);
+      window.showToast(`Collaborateur ${name.trim()} ajouté avec succès !`);
+    } catch(err) {
+      console.error(err);
+      window.showToast("Erreur lors de la création du compte", "danger");
+    }
+  };
 
   window.addPlanningRow = async function() {
     var taskEl = document.getElementById('p_task');
