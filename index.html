@@ -2588,7 +2588,11 @@
     try {
       if(snap.exists()) { window.allProjectsList = snap.data().list || []; } 
       else {
-        window.allProjectsList = [{id:'p1', name:'Nouveau Dépôt de Carburant - Béchar (EPC)'}, {id:'p2', name:'Centre de Remplissage LPG - Béchar'}];
+        window.allProjectsList = [
+          {id:'p_1783470556351', name:'Projet BALADNA EL-DJAZAIR - Aoulef Adrar'},
+          {id:'p1', name:'Nouveau Dépôt de Carburant - Béchar (EPC)'},
+          {id:'p2', name:'Centre de Remplissage LPG - Béchar'}
+        ];
         await setDoc(doc(db, "config", "projects_list"), { list: window.allProjectsList });
       }
 
